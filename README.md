@@ -1,4 +1,4 @@
-# ER Project 2
+# SRC Project 2
 
 ## Our Team
 
