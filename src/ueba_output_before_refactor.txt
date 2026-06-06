@@ -1,0 +1,157 @@
+/home/guipc/MCS/1ºAno/2ºSemestre/SRC/Project02/src/ueba.py:417: UserWarning: You passed a edgecolor/edgecolors ('darkred') for an unfilled marker ('x').  Matplotlib is ignoring the edgecolor in favor of the facecolor.  This behavior may change in the future.
+  ax1.scatter(f['flow_ratio'], f['cv_ratio'], alpha=0.9, color='red', s=50, marker='x', edgecolors='darkred', label='C&C flagged')
+/home/guipc/MCS/1ºAno/2ºSemestre/SRC/Project02/src/ueba.py:428: UserWarning: You passed a edgecolor/edgecolors ('darkred') for an unfilled marker ('x').  Matplotlib is ignoring the edgecolor in favor of the facecolor.  This behavior may change in the future.
+  ax2.scatter(f['tst_flows'], f['cv_ratio'], alpha=0.9, color='red', s=50, marker='x', edgecolors='darkred')
+Loading data...
+  internal_train: 911694 flows
+  internal_test:  1043236 flows
+  external_train: 679394 flows
+  external_test:  715697 flows
+
+Loading GeoIP...
+
+Computing baselines from training...
+  194 training IPs, 198 test IPs
+  36 countries in global baseline
+
+  DNS exfil: train max rel dev from med=40.81%, test median=0.1358, threshold=0.4130
+  HTTPS exfil: train max rel dev from med=6.45%, test median=0.1084, threshold=0.1434
+
+  C&C-DNS: P95 train dns flows=1040, exfil threshold=0.4130
+    beaconing: flows > P95 AND > 3x train AND cv_ratio < 0.5 AND ratio < exfil
+
+  External user thresholds:
+    P10(train CV) = 3.72  (more periodic than 90% of users)
+    P95(train off-hours %) = 0.30%  (more nighttime traffic than 95% of users)
+    AND logic: both must fire
+
+=== Internal BotNet activity (2 points) ===
+  Flagged IPs (4):
+    192.168.107.149:
+      - internal P2P: 242 flows to ['192.168.107.159', '192.168.107.29', '192.168.107.81']
+      -   P2P CV=1.39 < 0.5x train CV=4.72 (0.29x — automated)
+    192.168.107.159:
+      - internal P2P: 220 flows to ['192.168.107.149', '192.168.107.29', '192.168.107.81']
+      -   P2P CV=1.38 < 0.5x train CV=4.12 (0.34x — automated)
+    192.168.107.29:
+      - internal P2P: 346 flows to ['192.168.107.149', '192.168.107.159', '192.168.107.81']
+      -   P2P CV=1.44 < 0.5x train CV=4.48 (0.32x — automated)
+    192.168.107.81:
+      - internal P2P: 155 flows to ['192.168.107.149', '192.168.107.159', '192.168.107.29']
+      -   P2P CV=1.53 < 0.5x train CV=18.43 (0.08x — automated)
+
+=== Data exfiltration (DNS + HTTPS) (4 points) ===
+  Flagged IPs (10):
+    192.168.107.116:
+      - DNS exfil: ratio 0.598 > 0.4130, flows 2149 > P99(1131)
+    192.168.107.126:
+      - HTTPS exfil: ratio 0.5540 > 0.1434
+    192.168.107.152:
+      - DNS exfil: ratio 13.141 > 0.4130, flows 31775 > P99(1131)
+    192.168.107.16:
+      - DNS exfil: ratio 0.581 > 0.4130, flows 3060 > P99(1131)
+    192.168.107.181:
+      - DNS exfil: ratio 10.093 > 0.4130, flows 30520 > P99(1131)
+    192.168.107.190:
+      - HTTPS exfil: ratio 0.3019 > 0.1434
+    192.168.107.40:
+      - HTTPS exfil: ratio 13.4171 > 0.1434
+    192.168.107.50:
+      - DNS exfil: ratio 10.637 > 0.4130, flows 59737 > P99(1131)
+    192.168.107.82:
+      - HTTPS exfil: ratio 9.9937 > 0.1434
+    192.168.107.98:
+      - HTTPS exfil: ratio 18.5138 > 0.1434
+
+=== C&C via DNS (2 points) ===
+  Flagged IPs (3):
+    192.168.107.36:
+      - beaconing: flows 1245 (train=392, 3.2x)
+      - cv 5.82->1.89 (0.32x periodic)
+      - ratio 0.151 < exfil threshold 0.413
+    192.168.107.45:
+      - beaconing: flows 1433 (train=380, 3.8x)
+      - cv 6.77->2.39 (0.35x periodic)
+      - ratio 0.388 < exfil threshold 0.413
+    192.168.107.79:
+      - beaconing: flows 1227 (train=402, 3.1x)
+      - cv 3.96->1.88 (0.47x periodic)
+      - ratio 0.138 < exfil threshold 0.413
+
+=== Anomalous external destinations (2 points) ===
+  Flagged IPs (4):
+    192.168.107.145:
+      - NZ (52.108.127.63)
+    192.168.107.153:
+      - FI (194.215.243.93)
+      - RU (109.60.217.87, 162.62.131.196, 163.171.153.37, 192.166.102.157, 194.67.87.104, 45.135.95.160, 91.216.147.79, 91.231.218.15, 94.198.216.150)
+    192.168.107.157:
+      - IR (185.49.104.51, 188.214.85.132, 89.44.132.67)
+      - RU (109.106.193.27, 158.255.82.120, 178.238.20.126, 185.122.28.87, 185.195.153.144, 185.229.193.213, 185.64.52.99, 188.190.118.42, 188.65.55.4, 193.36.35.250, 193.37.224.131, 212.118.34.21, 213.232.240.154, 217.12.41.55, 31.130.48.229, 45.90.217.168, 77.95.23.242, 84.22.207.170, 92.240.211.197)
+      - TR (92.242.167.147)
+    192.168.107.34:
+      - IR (194.50.216.219)
+      - RU (193.238.116.58, 195.211.130.61, 89.250.221.216, 95.215.57.202)
+
+=== External user behavior (2 points) ===
+  Flagged IPs (2):
+    188.83.78.86:
+      - off-hours: 1.75% > P95 train (0.30%)
+      - cv: 0.24 < P10 train (3.72)
+    188.83.78.99:
+      - off-hours: 11.48% > P95 train (0.30%)
+      - cv: 3.70 < P10 train (3.72)
+
+Generating graphs...
+  Saved /home/guipc/MCS/1ºAno/2ºSemestre/SRC/Project02/src/statistics/graphs/ueba_dns_vs_https.png
+  Saved /home/guipc/MCS/1ºAno/2ºSemestre/SRC/Project02/src/statistics/graphs/ueba_botnet_flows.png
+  Saved /home/guipc/MCS/1ºAno/2ºSemestre/SRC/Project02/src/statistics/graphs/ueba_dns_ratio.png
+  Saved /home/guipc/MCS/1ºAno/2ºSemestre/SRC/Project02/src/statistics/graphs/ueba_https_ratio_compare.png
+  Saved /home/guipc/MCS/1ºAno/2ºSemestre/SRC/Project02/src/statistics/graphs/ueba_cc_dns_beaconing.png
+
+============================================================
+SUMMARY TABLE
+============================================================
+  Rule                                      Count  Points
+  ---------------------------------------- ------  ------
+  Internal BotNet activity                      4       2
+  Data exfil (DNS + HTTPS)                     10       4
+    of which DNS                                5
+    of which HTTPS                              5
+  C&C via DNS                                   3       2
+  Anomalous external destinations               4       2
+  External user behaviour                       2       2
+  ---------------------------------------- ------  ------
+  Total unique internal IPs                    21
+  Total unique external IPs                     2
+
+============================================================
+DEVICES TO BLOCK
+============================================================
+  21 internal IPs:
+    192.168.107.116  [LOW, 1 rules]  Exfil(DNS)
+    192.168.107.126  [LOW, 1 rules]  Exfil(HTTPS)
+    192.168.107.145  [LOW, 1 rules]  Anomalous-dest
+    192.168.107.149  [LOW, 1 rules]  BotNet
+    192.168.107.152  [LOW, 1 rules]  Exfil(DNS)
+    192.168.107.153  [LOW, 1 rules]  Anomalous-dest
+    192.168.107.157  [LOW, 1 rules]  Anomalous-dest
+    192.168.107.159  [LOW, 1 rules]  BotNet
+    192.168.107.16  [LOW, 1 rules]  Exfil(DNS)
+    192.168.107.181  [LOW, 1 rules]  Exfil(DNS)
+    192.168.107.190  [LOW, 1 rules]  Exfil(HTTPS)
+    192.168.107.29  [LOW, 1 rules]  BotNet
+    192.168.107.34  [LOW, 1 rules]  Anomalous-dest
+    192.168.107.36  [LOW, 1 rules]  C&C-DNS
+    192.168.107.40  [LOW, 1 rules]  Exfil(HTTPS)
+    192.168.107.45  [LOW, 1 rules]  C&C-DNS
+    192.168.107.50  [LOW, 1 rules]  Exfil(DNS)
+    192.168.107.79  [LOW, 1 rules]  C&C-DNS
+    192.168.107.81  [LOW, 1 rules]  BotNet
+    192.168.107.82  [LOW, 1 rules]  Exfil(HTTPS)
+    192.168.107.98  [LOW, 1 rules]  Exfil(HTTPS)
+  2 external IPs:
+    188.83.78.86
+    188.83.78.99
+
+Done.

@@ -7750,9 +7750,10 @@ SAVING GRAPHS
     >> threshold = 99th percentile = 226.21
 
 --- Rule 1: Internal BotNet ---
-  Approach: Per-IP AND logic (require both signals)
-  Signal: test_flows > 3x train_flows AND > 2,000
-  Signal: test_dsts  > 3x train_dsts   AND > 80
+  Signal: Internal P2P communication
+    IP contacts internal hosts beyond the 4 known servers (.224/.225/.230/.235)
+    AND P2P communication CV < 0.5 × this IP own training CV
+    (internal contacts + 2x more regular than own normal = automated botnet)
 
 --- Rule 2: Data Exfiltration (DNS + HTTPS) ---
   DNS signal: relative deviation from median
@@ -7774,12 +7775,14 @@ SAVING GRAPHS
 
 --- Rule 4: Anomalous External Destinations ---
   Baseline: 36 countries seen in training
-  Rule: flag IP contacting a country NOT in global training set, with >= 5 flows
+  Rule: flag IP contacting a country NOT in global training set
+    AND flow_count > median(train_dest_flows_for_this_IP)
   Training countries: ['AE', 'AT', 'AU', 'BE', 'BH', 'BR', 'CA', 'CH', 'CL', 'CN', 'DE', 'ES', 'FR', 'GB', 'HK', 'ID', 'IE', 'IL', 'IN', 'IT', 'JP', 'KR', 'MX', 'MY', 'NL', 'NO', 'PH', 'PT', 'RO', 'SA', 'SE', 'SG', 'TH', 'TW', 'US', 'ZA']
 
 --- Rule 5: External User Behavior ---
-  Global CV floor (minimum across all 194 training IPs): 3.54
-  Signal: off-hours > 50% AND test_CV < 3.54
-  OR: off-hours > 80% (extreme schedule shift)
+  Off-hours definition: flows between 0h-6h
+  P95(train off-hours %) = 0.30%
+  P10(train CV) = 3.72
+  Rule: test_off_pct > 0.30% AND test_cv < 3.72
 
 Done.

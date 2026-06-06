@@ -420,9 +420,10 @@ def print_global_summaries(per_ip_stats, dns_https, per_ip_countries, df_externa
     print_threshold('Unique dst IPs per IP', per_ip_stats['distinct_dsts'], 'p99')
 
     print('\n--- Rule 1: Internal BotNet ---')
-    print('  Approach: Per-IP AND logic (require both signals)')
-    print('  Signal: test_flows > 3x train_flows AND > 2,000')
-    print('  Signal: test_dsts  > 3x train_dsts   AND > 80')
+    print('  Signal: Internal P2P communication')
+    print('    IP contacts internal hosts beyond the 4 known servers (.224/.225/.230/.235)')
+    print('    AND P2P communication CV < 0.5 × this IP own training CV')
+    print('    (internal contacts + 2x more regular than own normal = automated botnet)')
 
     print(f'\n--- Rule 2: Data Exfiltration (DNS + HTTPS) ---')
     print(f'  DNS signal: relative deviation from median')
@@ -452,11 +453,13 @@ def print_global_summaries(per_ip_stats, dns_https, per_ip_countries, df_externa
     for countries in per_ip_countries.values():
         all_countries.update(countries.keys())
     print(f'  Baseline: {len(all_countries)} countries seen in training')
-    print(f'  Rule: flag IP contacting a country NOT in global training set, with >= 5 flows')
+    print(f'  Rule: flag IP contacting a country NOT in global training set')
+    print(f'    AND flow_count > median(train_dest_flows_for_this_IP)')
     print(f'  Training countries: {sorted(all_countries)}')
 
     print('\n--- Rule 5: External User Behavior ---')
     ext_stats = []
+    ext_off = []
     for src_ip in sorted(df_external['src_ip'].unique()):
         ip_data = df_external[df_external['src_ip'] == src_ip].sort_values('timestamp')
         intervals = ip_data['timestamp'].diff().dropna()
@@ -464,12 +467,18 @@ def print_global_summaries(per_ip_stats, dns_https, per_ip_countries, df_externa
         std_int = intervals.std() if len(intervals) > 0 else 0
         cv = std_int / mean_int if mean_int > 0 else np.nan
         ext_stats.append({'src_ip': src_ip, 'cv': cv})
+        off = len(ip_data[(ip_data['timestamp'] // 360000).between(0, 5)])
+        off_pct = off / len(ip_data) if len(ip_data) > 0 else 0
+        ext_off.append(off_pct)
     ext_df = pd.DataFrame(ext_stats)
     cvs = ext_df['cv'].dropna()
-    min_cv = cvs.min()
-    print(f'  Global CV floor (minimum across all {len(ext_df)} training IPs): {min_cv:.2f}')
-    print(f'  Signal: off-hours > 50% AND test_CV < {min_cv:.2f}')
-    print(f'  OR: off-hours > 80% (extreme schedule shift)')
+    off_s = pd.Series(ext_off)
+    p5_cv = cvs.quantile(0.10)
+    p99_off = off_s.quantile(0.95)
+    print(f'  Off-hours definition: flows between 0h-6h')
+    print(f'  P95(train off-hours %) = {p99_off:.2%}')
+    print(f'  P10(train CV) = {p5_cv:.2f}')
+    print(f'  Rule: test_off_pct > {p99_off:.2%} AND test_cv < {p5_cv:.2f}')
     print()
 
 
