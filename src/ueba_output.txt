@@ -13,6 +13,14 @@ Computing baselines from training...
 
   192 IPs appear in both train and test
 
+  DNS exfil: training max rel dev from med = 40.81%
+    test median = 0.1358, threshold = med + 204.06% = 0.4130
+  HTTPS exfil: training max rel dev from med = 6.45%
+    test median = 0.1084, threshold = med + 32.27% = 0.1434
+
+  C&C-DNS: P95(train dns flows)=1040, exfil threshold=0.4130
+    beaconing if: flows > P95 AND > 3x train AND cv_ratio < 0.5 AND ratio < exfil
+
   External user thresholds: global min CV = 3.54, off-hours > 50% (AND with low CV) or > 80% (standalone)
 
 === Internal BotNet activity (2 points) ===
@@ -27,79 +35,48 @@ Computing baselines from training...
       - flows 6199 (train=1288, 4.8x)
       - dst IPs 767 (train=56, 13.7x)
 
-=== Data exfiltration via DNS (4 points) ===
-  Flagged IPs (6):
-    192.168.107.152:
-      - DNS/HTTPS ratio 13.141 > 0.2
-      - DNS flows 31775 (train=180, 176.5x, 5x threshold)
-      - DNS upload 6348265 bytes (train=37953, 167.3x, 5x threshold)
-    192.168.107.176:
-      - DNS upload 140042 bytes (train=19311, 7.3x, 5x threshold)
-    192.168.107.181:
-      - DNS/HTTPS ratio 10.093 > 0.2
-      - DNS flows 30520 (train=659, 46.3x, 5x threshold)
-      - DNS upload 6099123 bytes (train=132413, 46.1x, 5x threshold)
-    192.168.107.184:
-      - DNS upload 139831 bytes (train=5102, 27.4x, 5x threshold)
-    192.168.107.30:
-      - DNS upload 78129 bytes (train=13312, 5.9x, 5x threshold)
-    192.168.107.50:
-      - DNS/HTTPS ratio 10.637 > 0.2
-      - DNS flows 59737 (train=702, 85.1x, 5x threshold)
-      - DNS upload 11911043 bytes (train=139463, 85.4x, 5x threshold)
-
-=== Data exfiltration via HTTPS (0 points) ===
-  Flagged IPs (9):
+=== Data exfiltration (DNS + HTTPS) (4 points) ===
+  Flagged IPs (10):
+    192.168.107.116:
+      - DNS exfil: DNS/HTTPS ratio 0.598 > 0.4130
+      -   + DNS flows 2149 > P99(1131)
     192.168.107.126:
-      - HTTPS upload 243002629 bytes (train=47482726, 5.1x, 5x threshold)
-      - HTTPS up/down ratio 0.5540 > 0.12 (plus volume surge)
-    192.168.107.176:
-      - HTTPS upload 54259872 bytes (train=7332159, 7.4x, 5x threshold)
-    192.168.107.184:
-      - HTTPS upload 60969123 bytes (train=2013314, 30.3x, 5x threshold)
+      - HTTPS exfil: up/down ratio 0.5540 > 0.1434
+    192.168.107.152:
+      - DNS exfil: DNS/HTTPS ratio 13.141 > 0.4130
+      -   + DNS flows 31775 > P99(1131)
+    192.168.107.16:
+      - DNS exfil: DNS/HTTPS ratio 0.581 > 0.4130
+      -   + DNS flows 3060 > P99(1131)
+    192.168.107.181:
+      - DNS exfil: DNS/HTTPS ratio 10.093 > 0.4130
+      -   + DNS flows 30520 > P99(1131)
     192.168.107.190:
-      - HTTPS upload 141696628 bytes (train=19446234, 7.3x, 5x threshold)
-      - HTTPS up/down ratio 0.3019 > 0.12 (plus volume surge)
-    192.168.107.201:
-      - HTTPS upload 56728407 bytes (train=10855358, 5.2x, 5x threshold)
-    192.168.107.34:
-      - HTTPS upload 78051739 bytes (train=12287581, 6.4x, 5x threshold)
+      - HTTPS exfil: up/down ratio 0.3019 > 0.1434
     192.168.107.40:
-      - HTTPS upload 6352885056 bytes (train=77547823, 81.9x, 5x threshold)
-      - HTTPS up/down ratio 13.4171 > 0.12 (plus volume surge)
+      - HTTPS exfil: up/down ratio 13.4171 > 0.1434
+    192.168.107.50:
+      - DNS exfil: DNS/HTTPS ratio 10.637 > 0.4130
+      -   + DNS flows 59737 > P99(1131)
     192.168.107.82:
-      - HTTPS upload 7495683378 bytes (train=29759775, 251.9x, 5x threshold)
-      - HTTPS up/down ratio 9.9937 > 0.12 (plus volume surge)
+      - HTTPS exfil: up/down ratio 9.9937 > 0.1434
     192.168.107.98:
-      - HTTPS upload 5781061718 bytes (train=81074983, 71.3x, 5x threshold)
-      - HTTPS up/down ratio 18.5138 > 0.12 (plus volume surge)
+      - HTTPS exfil: up/down ratio 18.5138 > 0.1434
 
 === C&C via DNS (2 points) ===
-  Flagged IPs (12):
-    192.168.107.104:
-      - DNS C&C beaconing: flows 520 (train=145, 3.6x), normal ratio 0.123
-    192.168.107.105:
-      - DNS C&C beaconing: flows 837 (train=227, 3.7x), normal ratio 0.149
-    192.168.107.109:
-      - DNS C&C beaconing: flows 411 (train=120, 3.4x), normal ratio 0.136
-    192.168.107.175:
-      - DNS C&C beaconing: flows 931 (train=289, 3.2x), normal ratio 0.142
-    192.168.107.176:
-      - DNS C&C beaconing: flows 701 (train=94, 7.5x), normal ratio 0.147
-    192.168.107.18:
-      - DNS C&C beaconing: flows 955 (train=277, 3.4x), normal ratio 0.146
-    192.168.107.184:
-      - DNS C&C beaconing: flows 714 (train=24, 29.8x), normal ratio 0.132
-    192.168.107.195:
-      - DNS C&C beaconing: flows 475 (train=145, 3.3x), normal ratio 0.125
-    192.168.107.201:
-      - DNS C&C beaconing: flows 719 (train=148, 4.9x), normal ratio 0.145
-    192.168.107.30:
-      - DNS C&C beaconing: flows 382 (train=66, 5.8x), normal ratio 0.147
+  Flagged IPs (3):
     192.168.107.36:
-      - DNS C&C beaconing: flows 1245 (train=392, 3.2x), normal ratio 0.151
+      - DNS C&C beaconing: flows 1245 (train=392, 3.2x)
+      -   cv 5.82->1.89 (0.32x more periodic)
+      -   ratio 0.151 < exfil threshold 0.413
+    192.168.107.45:
+      - DNS C&C beaconing: flows 1433 (train=380, 3.8x)
+      -   cv 6.77->2.39 (0.35x more periodic)
+      -   ratio 0.388 < exfil threshold 0.413
     192.168.107.79:
-      - DNS C&C beaconing: flows 1227 (train=402, 3.1x), normal ratio 0.138
+      - DNS C&C beaconing: flows 1227 (train=402, 3.1x)
+      -   cv 3.96->1.88 (0.47x more periodic)
+      -   ratio 0.138 < exfil threshold 0.413
 
 === Anomalous external destinations (2 points) ===
   Flagged IPs (4):
@@ -157,65 +134,18 @@ Computing baselines from training...
 Generating anomaly comparison graphs...
   Saved /home/guipc/MCS/1ºAno/2ºSemestre/SRC/Project02/src/statistics/graphs/ueba_dns_vs_https.png
   Saved /home/guipc/MCS/1ºAno/2ºSemestre/SRC/Project02/src/statistics/graphs/ueba_botnet_flows.png
-  Saved /home/guipc/MCS/1ºAno/2ºSemestre/SRC/Project02/src/statistics/graphs/ueba_dns_ratio.png
-
-============================================================
-SUMMARY TABLE
-============================================================
-  Rule                                      Count  Points
-  ---------------------------------------- ------  ------
-  Internal BotNet activity                      3       2
-  Data exfiltration via DNS                     6       4
-  Data exfiltration via HTTPS                   9       -
-  C&C via DNS                                  12       2
-  Anomalous external destinations               4       2
-  External user behaviour                      14       2
-  ---------------------------------------- ------  ------
-  Total unique internal IPs                    24
-  Total unique external IPs                    14
-
-============================================================
-DEVICES TO BLOCK
-============================================================
-  24 internal IPs (any detected anomaly):
-    192.168.107.104  [LOW, 1 rules]  C&C-DNS
-    192.168.107.105  [LOW, 1 rules]  C&C-DNS
-    192.168.107.109  [LOW, 1 rules]  C&C-DNS
-    192.168.107.126  [LOW, 1 rules]  Exfil-HTTPS
-    192.168.107.145  [LOW, 1 rules]  Anomalous-dest
-    192.168.107.152  [LOW, 1 rules]  Exfil-DNS
-    192.168.107.153  [LOW, 1 rules]  Anomalous-dest
-    192.168.107.157  [MEDIUM, 2 rules]  BotNet, Anomalous-dest
-    192.168.107.175  [LOW, 1 rules]  C&C-DNS
-    192.168.107.176  [HIGH, 3 rules]  Exfil-DNS, Exfil-HTTPS, C&C-DNS
-    192.168.107.18  [LOW, 1 rules]  C&C-DNS
-    192.168.107.181  [LOW, 1 rules]  Exfil-DNS
-    192.168.107.184  [HIGH, 4 rules]  BotNet, Exfil-DNS, Exfil-HTTPS, C&C-DNS
-    192.168.107.190  [LOW, 1 rules]  Exfil-HTTPS
-    192.168.107.195  [LOW, 1 rules]  C&C-DNS
-    192.168.107.201  [MEDIUM, 2 rules]  Exfil-HTTPS, C&C-DNS
-    192.168.107.30  [MEDIUM, 2 rules]  Exfil-DNS, C&C-DNS
-    192.168.107.34  [HIGH, 3 rules]  BotNet, Exfil-HTTPS, Anomalous-dest
-    192.168.107.36  [LOW, 1 rules]  C&C-DNS
-    192.168.107.40  [LOW, 1 rules]  Exfil-HTTPS
-    192.168.107.50  [LOW, 1 rules]  Exfil-DNS
-    192.168.107.79  [LOW, 1 rules]  C&C-DNS
-    192.168.107.82  [LOW, 1 rules]  Exfil-HTTPS
-    192.168.107.98  [LOW, 1 rules]  Exfil-HTTPS
-  14 external IPs:
-    188.83.78.119
-    188.83.78.135
-    188.83.78.141
-    188.83.78.151
-    188.83.78.163
-    188.83.78.168
-    188.83.78.187
-    188.83.78.193
-    188.83.78.39
-    188.83.78.42
-    188.83.78.44
-    188.83.78.54
-    188.83.78.60
-    188.83.78.65
-
-Done.
+Traceback (most recent call last):
+  File "/home/guipc/MCS/1ºAno/2ºSemestre/SRC/Project02/src/ueba.py", line 655, in <module>
+    main()
+    ~~~~^^
+  File "/home/guipc/MCS/1ºAno/2ºSemestre/SRC/Project02/src/ueba.py", line 589, in main
+    plot_test_vs_train(int_test_stats, int_train_stats, df_int_train, df_int_test,
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                       flagged_botnet, flagged_exfil_dns, flagged_exfil_https,
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                       flagged_cc, flagged_dests)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/guipc/MCS/1ºAno/2ºSemestre/SRC/Project02/src/ueba.py", line 406, in plot_test_vs_train
+    plt.axvline(x=dns_threshold, color='red', linestyle='--',
+                  ^^^^^^^^^^^^^
+NameError: name 'dns_threshold' is not defined

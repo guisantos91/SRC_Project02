@@ -14,9 +14,9 @@ GRAPHS_DIR = Path(__file__).resolve().parent / 'statistics' / 'graphs'
 PRIVATE_NET = ipaddress.IPv4Network('192.168.0.0/16')
 
 # Global thresholds derived from training data
-DNS_HTTPS_RATIO_THRESHOLD = 0.20
-DNS_MEAN_UP_THRESHOLD = 217
-HTTPS_RATIO_THRESHOLD = 0.12
+DNS_MEAN_UP_THRESHOLD = 217        # mean+5σ, above training max 212.6
+DNS_FLOWS_P99 = 1131               # 99th percentile of training dns_flows per IP
+HTTPS_FLOWS_P99 = 8468             # 99th percentile of training https_flows per IP
 
 
 def load_data():
@@ -132,81 +132,115 @@ def rule_botnet(int_test_stats, int_train_stats):
     return flagged, details
 
 
-def rule_exfil_dns(int_test_stats, int_train_stats):
-    flagged = set()
+def rule_exfil(int_test_stats, int_train_stats):
+    # DNS threshold: relative deviation from median
+    train_dns = int_train_stats['dns_https_flow_ratio'].dropna()
+    dns_tr_med = train_dns.median()
+    dns_max_pct = (train_dns - dns_tr_med).abs().max() / dns_tr_med
+    test_dns = int_test_stats['dns_https_flow_ratio'].dropna()
+    dns_ts_med = test_dns.median()
+    dns_threshold = dns_ts_med * (1 + 5 * dns_max_pct)
+
+    train_ratio = int_train_stats['https_up_down_ratio'].dropna()
+    ratio_median = train_ratio.median()
+    max_pct = (train_ratio - ratio_median).abs().max() / ratio_median
+
+    test_ratio = int_test_stats['https_up_down_ratio'].dropna()
+    test_median = test_ratio.median()
+    https_threshold = test_median * (1 + 5 * max_pct)
+    print(f'  DNS exfil: training max rel dev from med = {dns_max_pct*100:.2f}%')
+    print(f'    test median = {dns_ts_med:.4f}, threshold = med + {5*dns_max_pct*100:.2f}% = {dns_threshold:.4f}')
+    print(f'  HTTPS exfil: training max rel dev from med = {max_pct*100:.2f}%')
+    print(f'    test median = {test_median:.4f}, threshold = med + {5*max_pct*100:.2f}% = {https_threshold:.4f}')
+    print()
+
+    dns_flagged = set()
+    https_flagged = set()
     details = {}
+
     for ip in int_test_stats.index:
         if ip not in int_train_stats.index:
             continue
-        reasons = []
-        trn = int_train_stats.loc[ip]
         tst = int_test_stats.loc[ip]
 
-        ratio_hit = pd.notna(tst['dns_https_flow_ratio']) and tst['dns_https_flow_ratio'] > DNS_HTTPS_RATIO_THRESHOLD
-        dns_surge, vf, tf, rf = check_per_ip_surge(tst['dns_flows'], trn['dns_flows'], 500, 5.0)
+        dns_hit = pd.notna(tst['dns_https_flow_ratio']) and tst['dns_https_flow_ratio'] > dns_threshold
+        dns_volume = tst['dns_flows'] > DNS_FLOWS_P99
+        https_hit = pd.notna(tst['https_up_down_ratio']) and tst['https_up_down_ratio'] > https_threshold
 
-        if ratio_hit and dns_surge:
-            reasons.append(f'DNS/HTTPS ratio {tst["dns_https_flow_ratio"]:.3f} > {DNS_HTTPS_RATIO_THRESHOLD}')
-            reasons.append(f'DNS flows {int(vf)} (train={int(tf)}, {rf:.1f}x, 5x threshold)')
-
-        up_surge, vu, tu, ru = check_per_ip_surge(tst['dns_up'], trn['dns_up'], 50000, 5.0)
-        if up_surge:
-            reasons.append(f'DNS upload {int(vu)} bytes (train={int(tu)}, {ru:.1f}x, 5x threshold)')
-
-        if reasons:
-            flagged.add(ip)
+        if (dns_hit and dns_volume) or https_hit:
+            reasons = []
+            if dns_hit and dns_volume:
+                reasons.append(f'DNS exfil: DNS/HTTPS ratio {tst["dns_https_flow_ratio"]:.3f} > {dns_threshold:.4f}')
+                reasons.append(f'  + DNS flows {int(tst["dns_flows"])} > P99({DNS_FLOWS_P99})')
+                dns_flagged.add(ip)
+            if https_hit:
+                reasons.append(f'HTTPS exfil: up/down ratio {tst["https_up_down_ratio"]:.4f} > {https_threshold:.4f}')
+                https_flagged.add(ip)
             details[ip] = reasons
-    return flagged, details
+
+    return dns_flagged, https_flagged, details
 
 
-def rule_exfil_https(int_test_stats, int_train_stats):
+def compute_dns_cv(df, ip):
+    ip_dns = df[(df['port'] == 53) & (df['src_ip'] == ip)].sort_values('timestamp')
+    gaps = ip_dns['timestamp'].diff().dropna()
+    if len(gaps) > 1:
+        return gaps.std() / gaps.mean()
+    return np.nan
+
+
+def batch_dns_cv(df):
+    dns = df[df['port'] == 53].sort_values(['src_ip', 'timestamp'])
+    gaps = dns.groupby('src_ip')['timestamp'].diff()
+    grouped = gaps.groupby(dns['src_ip'])
+    means = grouped.mean()
+    stds = grouped.std()
+    return (stds / means).dropna()
+
+
+def rule_cc_dns(df_int_test, int_test_stats, df_int_train, int_train_stats):
+    tr_dns_flows = int_train_stats['dns_flows']
+    tr_p95 = tr_dns_flows.quantile(0.95)
+
+    exfil_dns = int_test_stats['dns_https_flow_ratio'].dropna()
+    exfil_threshold = exfil_dns.median() * (1 + 5 * ((int_train_stats['dns_https_flow_ratio'].dropna()
+        - int_train_stats['dns_https_flow_ratio'].dropna().median()).abs().max()
+        / int_train_stats['dns_https_flow_ratio'].dropna().median()))
+
+    common = set(tr_dns_flows.index) & set(int_test_stats.index)
     flagged = set()
     details = {}
-    for ip in int_test_stats.index:
-        if ip not in int_train_stats.index:
+
+    train_cv = batch_dns_cv(df_int_train)
+    test_cv = batch_dns_cv(df_int_test)
+
+    for ip in sorted(common):
+        trn_flows = tr_dns_flows[ip]
+        tst_flows = int_test_stats.loc[ip, 'dns_flows']
+
+        if tst_flows < 100 or trn_flows <= 0:
             continue
-        reasons = []
-        trn = int_train_stats.loc[ip]
-        tst = int_test_stats.loc[ip]
-
-        hit, v, t, r = check_per_ip_surge(tst['https_up'], trn['https_up'], 20_000_000, 5.0)
-        if hit:
-            reasons.append(f'HTTPS upload {int(v)} bytes (train={int(t)}, {r:.1f}x, 5x threshold)')
-
-        ratio_hit = pd.notna(tst['https_up_down_ratio']) and tst['https_up_down_ratio'] > HTTPS_RATIO_THRESHOLD
-        vol_hit, _, _, _ = check_per_ip_surge(tst['https_up'], trn['https_up'], 20_000_000, 3.0)
-        if ratio_hit and vol_hit:
-            reasons.append(f'HTTPS up/down ratio {tst["https_up_down_ratio"]:.4f} > {HTTPS_RATIO_THRESHOLD} '
-                           f'(plus volume surge)')
-
-        if reasons:
-            flagged.add(ip)
-            details[ip] = reasons
-    return flagged, details
-
-
-def rule_cc_dns(int_test_stats, int_train_stats):
-    flagged = set()
-    details = {}
-    for ip in int_test_stats.index:
-        if ip not in int_train_stats.index:
+        if not (tst_flows > tr_p95 and tst_flows > trn_flows * 3):
             continue
-        reasons = []
-        trn = int_train_stats.loc[ip]
-        tst = int_test_stats.loc[ip]
 
-        hit_surge, vf, tf, rf = check_per_ip_surge(tst['dns_flows'], trn['dns_flows'], 100, 3.0)
-        ratio_normal = pd.notna(tst['dns_https_flow_ratio']) and tst['dns_https_flow_ratio'] < 0.16
-        large_packets = pd.notna(tst['dns_mean_up']) and tst['dns_mean_up'] > DNS_MEAN_UP_THRESHOLD
+        if ip not in train_cv.index or ip not in test_cv.index:
+            continue
+        trn_cv = train_cv[ip]
+        tst_cv = test_cv[ip]
+        cv_ratio = tst_cv / trn_cv if trn_cv > 0 else np.nan
+        tst_ratio = int_test_stats.loc[ip, 'dns_https_flow_ratio']
 
-        if hit_surge and ratio_normal:
-            reasons.append(f'DNS C&C beaconing: flows {int(vf)} (train={int(tf)}, {rf:.1f}x), '
-                           f'normal ratio {tst["dns_https_flow_ratio"]:.3f}')
-        if large_packets:
-            reasons.append(f'DNS packet size {tst["dns_mean_up"]:.1f} bytes > {DNS_MEAN_UP_THRESHOLD}')
-        if reasons:
+        if pd.notna(cv_ratio) and cv_ratio < 0.5 and pd.notna(tst_ratio) and tst_ratio < exfil_threshold:
             flagged.add(ip)
-            details[ip] = reasons
+            details[ip] = [
+                f'DNS C&C beaconing: flows {int(tst_flows)} (train={int(trn_flows)}, {tst_flows/trn_flows:.1f}x)',
+                f'  cv {trn_cv:.2f}->{tst_cv:.2f} ({cv_ratio:.2f}x more periodic)',
+                f'  ratio {tst_ratio:.3f} < exfil threshold {exfil_threshold:.3f}',
+            ]
+
+    print(f'  C&C-DNS: P95(train dns flows)={tr_p95:.0f}, exfil threshold={exfil_threshold:.4f}')
+    print(f'    beaconing if: flows > P95 AND > 3x train AND cv_ratio < 0.5 AND ratio < exfil')
+    print()
     return flagged, details
 
 
@@ -290,7 +324,9 @@ def print_results(rule_name, flagged, details, points):
     print()
 
 
-def plot_test_vs_train(int_test_stats, int_train_stats, flagged_botnet, flagged_exfil_dns, flagged_dests):
+def plot_test_vs_train(int_test_stats, int_train_stats, df_int_train, df_int_test,
+                       flagged_botnet, flagged_exfil_dns, flagged_exfil_https,
+                       flagged_cc, flagged_dests):
     print('Generating anomaly comparison graphs...')
     GRAPHS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -367,8 +403,8 @@ def plot_test_vs_train(int_test_stats, int_train_stats, flagged_botnet, flagged_
     if exfil_mask.any():
         plt.hist(merged.loc[exfil_mask, 'dns_https_flow_ratio_test'].dropna(), bins=30,
                  alpha=0.8, color='red', label='Exfil-DNS flagged', edgecolor='darkred')
-    plt.axvline(x=DNS_HTTPS_RATIO_THRESHOLD, color='red', linestyle='--',
-                label=f'Threshold ({DNS_HTTPS_RATIO_THRESHOLD})')
+    plt.axvline(x=dns_threshold, color='red', linestyle='--',
+                label=f'Threshold ({dns_threshold:.4f})')
     plt.xlabel('DNS/HTTPS flow ratio')
     plt.ylabel('Count')
     plt.title('DNS/HTTPS ratio distribution — Exfil-DNS flagged IPs highlighted')
@@ -377,6 +413,134 @@ def plot_test_vs_train(int_test_stats, int_train_stats, flagged_botnet, flagged_
     plt.savefig(GRAPHS_DIR / 'ueba_dns_ratio.png')
     plt.close()
     print(f'  Saved {GRAPHS_DIR / "ueba_dns_ratio.png"}')
+
+    https_flows = int_test_stats['https_flows'].dropna()
+    plt.figure(figsize=(10, 5))
+    plt.hist(https_flows, bins=30, edgecolor='black', alpha=0.8, color='steelblue')
+    plt.axvline(x=HTTPS_FLOWS_P99, color='red', linestyle='--', linewidth=2,
+                label=f'P99 training = {HTTPS_FLOWS_P99}')
+    plt.xlabel('HTTPS flow count per IP')
+    plt.ylabel('Frequency (number of IPs)')
+    plt.title('Distribution of HTTPS flow count per IP (test)')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(GRAPHS_DIR / 'ueba_https_flows_test.png')
+    plt.close()
+    print(f'  Saved {GRAPHS_DIR / "ueba_https_flows_test.png"}')
+
+    https_ratio = int_test_stats['https_up_down_ratio'].replace([np.inf, -np.inf], np.nan).dropna()
+    train_ratio_s = int_train_stats['https_up_down_ratio'].dropna()
+    hr_mean = train_ratio_s.mean()
+    hr_dev = (train_ratio_s - hr_mean).abs().quantile(0.98)
+    hr_threshold = hr_mean + 5 * hr_dev
+    plt.figure(figsize=(10, 5))
+    plt.hist(https_ratio, bins=30, edgecolor='black', alpha=0.8, color='steelblue')
+    plt.axvline(x=hr_threshold, color='red', linestyle='--', linewidth=2,
+                label=f'Threshold = {hr_threshold:.4f}')
+    plt.xlabel('HTTPS up/down bytes ratio per IP')
+    plt.ylabel('Frequency (number of IPs)')
+    plt.title('Distribution of HTTPS up/down ratio per IP (test)')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(GRAPHS_DIR / 'ueba_https_ratio_test.png')
+    plt.close()
+    print(f'  Saved {GRAPHS_DIR / "ueba_https_ratio_test.png"}')
+
+    train_ratio_s = int_train_stats['https_up_down_ratio'].dropna()
+    test_ratio_s = int_test_stats['https_up_down_ratio'].dropna()
+    tr_median = train_ratio_s.median()
+    tr_max_pct = (train_ratio_s - tr_median).abs().max() / tr_median
+    ts_median = test_ratio_s.median()
+    threshold = ts_median * (1 + 5 * tr_max_pct)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+
+    ax1.hist(train_ratio_s, bins=30, edgecolor='black', alpha=0.8, color='gray')
+    ax1.axvline(x=tr_median, color='steelblue', linestyle='-', linewidth=2, label=f'Median = {tr_median:.4f}')
+    ax1.axvline(x=tr_median * (1 + tr_max_pct), color='orange', linestyle='--', linewidth=1.5,
+                label=f'±{tr_max_pct*100:.2f}% (max normal dev)')
+    ax1.axvline(x=tr_median * (1 - tr_max_pct), color='orange', linestyle='--', linewidth=1.5)
+    ax1.set_xlabel('HTTPS up/down ratio')
+    ax1.set_ylabel('IPs')
+    ax1.set_title('Training — HTTPS up/down ratio')
+    ax1.legend(fontsize=8)
+
+    ax2.hist(test_ratio_s, bins=30, edgecolor='black', alpha=0.8, color='steelblue')
+    exfil_https_mask = test_ratio_s.index.isin(flagged_exfil_https)
+    if exfil_https_mask.any():
+        ax2.hist(test_ratio_s[exfil_https_mask], bins=30, edgecolor='darkred', alpha=0.9,
+                 color='red', label='HTTPS exfil flagged')
+    ax2.axvline(x=ts_median, color='gray', linestyle='-', linewidth=2, label=f'Median = {ts_median:.4f}')
+    ax2.axvline(x=threshold, color='red', linestyle='--', linewidth=2,
+                label=f'Threshold (+{5*tr_max_pct*100:.2f}% = {threshold:.4f})')
+    ax2.set_xlabel('HTTPS up/down ratio')
+    ax2.set_ylabel('IPs')
+    ax2.set_title(f'Test — HTTPS up/down ratio\n({len(test_ratio_s[test_ratio_s > threshold])} flagged above {threshold:.4f})')
+    ax2.legend(fontsize=8)
+
+    plt.tight_layout()
+    plt.savefig(GRAPHS_DIR / 'ueba_https_ratio_compare.png')
+    plt.close()
+    print(f'  Saved {GRAPHS_DIR / "ueba_https_ratio_compare.png"}')
+
+    # C&C DNS: CV ratio vs flow surge scatter
+    dns_flows_tr = int_train_stats['dns_flows'].dropna()
+    tr_p95 = dns_flows_tr.quantile(0.95)
+    t_cv = batch_dns_cv(df_int_test)
+    r_cv = batch_dns_cv(df_int_train)
+    common_cv = set(r_cv.index) & set(t_cv.index) & set(dns_flows_tr.index) & set(int_test_stats.index)
+
+    pts = []
+    for ip in sorted(common_cv):
+        trn = dns_flows_tr[ip]
+        tst = int_test_stats.loc[ip, 'dns_flows']
+        if trn <= 0 or tst < 100 or tst < trn * 2:
+            continue
+        cv_ratio = t_cv[ip] / r_cv[ip]
+        pts.append({'ip': ip, 'flow_ratio': tst / trn, 'cv_ratio': cv_ratio,
+                     'tst_flows': tst, 'trn_flows': trn,
+                     'flagged': ip in flagged_cc})
+
+    if pts:
+        df_pts = pd.DataFrame(pts)
+        df_pts = pd.DataFrame(pts)
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+
+        normal = df_pts[~df_pts['flagged']]
+        flagged = df_pts[df_pts['flagged']]
+
+        ax1.scatter(normal['flow_ratio'], normal['cv_ratio'], alpha=0.4, color='steelblue', s=15, label='Normal')
+        if len(flagged) > 0:
+            ax1.scatter(flagged['flow_ratio'], flagged['cv_ratio'], alpha=0.9, color='red', s=50, marker='x',
+                         edgecolors='darkred', linewidths=1.5, label='C&C flagged')
+            for _, r in flagged.iterrows():
+                ax1.annotate(r['ip'].split('.')[-1], (r['flow_ratio'], r['cv_ratio']),
+                             fontsize=7, color='darkred', fontweight='bold')
+        ax1.axhline(y=0.5, color='red', linestyle='--', label='cv_ratio < 0.5')
+        ax1.axvline(x=3.0, color='orange', linestyle='--', label='flow > 3x')
+        ax1.set_xlabel('DNS flow ratio (test/train)')
+        ax1.set_ylabel('CV ratio (test/train)')
+        ax1.set_title('DNS beaconing — CV vs flow surge')
+        ax1.legend(fontsize=8)
+
+        ax2.scatter(normal['tst_flows'], normal['cv_ratio'], alpha=0.4, color='steelblue', s=15)
+        if len(flagged) > 0:
+            ax2.scatter(flagged['tst_flows'], flagged['cv_ratio'], alpha=0.9, color='red', s=50, marker='x',
+                         edgecolors='darkred', linewidths=1.5)
+            for _, r in flagged.iterrows():
+                ax2.annotate(r['ip'].split('.')[-1], (r['tst_flows'], r['cv_ratio']),
+                             fontsize=7, color='darkred', fontweight='bold')
+        ax2.axhline(y=0.5, color='red', linestyle='--', label='cv_ratio < 0.5')
+        ax2.axvline(x=tr_p95, color='orange', linestyle='--', label=f'P95 flow = {tr_p95:.0f}')
+        ax2.set_xlabel('DNS flow count (test)')
+        ax2.set_ylabel('CV ratio (test/train)')
+        ax2.set_title('DNS beaconing — CV vs flow volume')
+        ax2.legend(fontsize=8)
+
+        plt.tight_layout()
+        plt.savefig(GRAPHS_DIR / 'ueba_cc_dns_beaconing.png')
+        plt.close()
+        print(f'  Saved {GRAPHS_DIR / "ueba_cc_dns_beaconing.png"}')
     print()
 
 
@@ -411,20 +575,20 @@ def main():
     print()
 
     flagged_botnet, det_botnet = rule_botnet(int_test_stats, int_train_stats)
-    flagged_exfil_dns, det_exfil_dns = rule_exfil_dns(int_test_stats, int_train_stats)
-    flagged_exfil_https, det_exfil_https = rule_exfil_https(int_test_stats, int_train_stats)
-    flagged_cc, det_cc = rule_cc_dns(int_test_stats, int_train_stats)
+    flagged_exfil_dns, flagged_exfil_https, det_exfil = rule_exfil(int_test_stats, int_train_stats)
+    flagged_cc, det_cc = rule_cc_dns(df_int_test, int_test_stats, df_int_train, int_train_stats)
     flagged_dests, det_dests = rule_anomalous_dests(df_int_test, global_countries, reader_country)
     flagged_ext, det_ext = rule_external_users(df_ext_test, ext_baselines)
 
     print_results('Internal BotNet activity', flagged_botnet, det_botnet, 2)
-    print_results('Data exfiltration via DNS', flagged_exfil_dns, det_exfil_dns, 4)
-    print_results('Data exfiltration via HTTPS', flagged_exfil_https, det_exfil_https, 0)
+    print_results('Data exfiltration (DNS + HTTPS)', flagged_exfil_dns | flagged_exfil_https, det_exfil, 4)
     print_results('C&C via DNS', flagged_cc, det_cc, 2)
     print_results('Anomalous external destinations', flagged_dests, det_dests, 2)
     print_results('External user behavior', flagged_ext, det_ext, 2)
 
-    plot_test_vs_train(int_test_stats, int_train_stats, flagged_botnet, flagged_exfil_dns, flagged_dests)
+    plot_test_vs_train(int_test_stats, int_train_stats, df_int_train, df_int_test,
+                       flagged_botnet, flagged_exfil_dns, flagged_exfil_https,
+                       flagged_cc, flagged_dests)
 
     all_internal_flagged = set()
     all_internal_flagged.update(flagged_botnet)
@@ -433,14 +597,17 @@ def main():
     all_internal_flagged.update(flagged_cc)
     all_internal_flagged.update(flagged_dests)
 
+    all_exfil = flagged_exfil_dns | flagged_exfil_https
+
     print('=' * 60)
     print('SUMMARY TABLE')
     print('=' * 60)
     print(f'  {"Rule":<40} {"Count":>6}  {"Points":>6}')
     print(f'  {"-"*40} {"-"*6}  {"-"*6}')
     print(f'  {"Internal BotNet activity":<40} {len(flagged_botnet):>6}  {"2":>6}')
-    print(f'  {"Data exfiltration via DNS":<40} {len(flagged_exfil_dns):>6}  {"4":>6}')
-    print(f'  {"Data exfiltration via HTTPS":<40} {len(flagged_exfil_https):>6}  {"-":>6}')
+    print(f'  {"Data exfil (DNS+HTTPS)":<40} {len(all_exfil):>6}  {"4":>6}')
+    print(f'  {"  of which DNS":<40} {len(flagged_exfil_dns):>6}')
+    print(f'  {"  of which HTTPS":<40} {len(flagged_exfil_https):>6}')
     print(f'  {"C&C via DNS":<40} {len(flagged_cc):>6}  {"2":>6}')
     print(f'  {"Anomalous external destinations":<40} {len(flagged_dests):>6}  {"2":>6}')
     print(f'  {"External user behaviour":<40} {len(flagged_ext):>6}  {"2":>6}')
@@ -459,9 +626,9 @@ def main():
             if ip in flagged_botnet:
                 rules.append('BotNet')
             if ip in flagged_exfil_dns:
-                rules.append('Exfil-DNS')
+                rules.append('Exfil(DNS)')
             if ip in flagged_exfil_https:
-                rules.append('Exfil-HTTPS')
+                rules.append('Exfil(HTTPS)')
             if ip in flagged_cc:
                 rules.append('C&C-DNS')
             if ip in flagged_dests:

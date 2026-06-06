@@ -7722,60 +7722,64 @@ SAVING GRAPHS
   Saved graphs/top_countries_train.png
   Saved graphs/interval_hist_train.png
   Saved graphs/dns_vs_https_scatter_train.png
+  Saved graphs/https_flows_hist_train.png
+  Saved graphs/https_ratio_hist_train.png
 
 ============================================================
-7. GLOBAL SUMMARY — RULE THRESHOLDS
-   Hybrid approach:
-     - Global absolute thresholds (mean+kσ from training) for ratios & packet sizes
-     - Per-IP fixed 3x multiplier for volume metrics (flows, bytes, destinations)
-     - Categorical baseline for anomalous destinations
+7. GLOBAL SUMMARY — RULE THRESHOLDS (derived from training data)
 ============================================================
 
---- Rule: Internal BotNet ---
-  Approach: Per-IP deviation with fixed 3x multiplier
-  Signal: test_flows > 3x train_flows AND > 500
-  Signal: test_dsts   > 3x train_dsts   AND > 20
-  Training flow count reference:
-    194 IPs, min=193.00, p5=1196.45, median=4616.50, mean=4699.45, std=2172.59, p95=8502.35, p99=9690.62, max=11082.00
-    >> threshold = 95th percentile = 8502.35
-  Training unique dst IPs reference:
-    194 IPs, min=23.00, p5=56.00, median=124.50, mean=126.10, std=42.59, p95=202.35, p99=226.21, max=236.00
-    >> threshold = 95th percentile = 202.35
-
---- Rule: Data Exfiltration via DNS ---
-  Approach: Global threshold for DNS/HTTPS ratio + per-IP 3x for DNS volume
-  Global threshold: dns_https_flow_ratio > 0.2 (above training max of 0.19)
-  Per-IP: test_dns_flows > 3x train_dns_flows AND > 100
-  Per-IP: test_dns_up > 3x train_dns_up AND > 10,000
-  Training DNS/HTTPS ratio reference:
+--- Training Data Distributions ---
+  DNS flows per IP:
+    194 IPs, min=24.00, p5=162.50, median=558.00, mean=564.08, std=260.55, p95=1039.70, p99=1131.42, max=1350.00
+    >> threshold = 99th percentile = 1131.42
+  DNS/HTTPS flow ratio:
     194 IPs, min=0.09, p5=0.12, median=0.14, mean=0.14, std=0.01, p95=0.16, p99=0.17, max=0.19
-    >> threshold = mean + 2σ = 0.16
-
---- Rule: Data Exfiltration via HTTPS ---
-  Approach: Global threshold for up/down ratio + per-IP 3x for HTTPS volume
-  Global threshold: https_up_down_ratio > 0.12 (training mean + 3σ, mean≈0.11, σ≈0.003)
-  Per-IP: test_https_up > 3x train_https_up AND > 100,000
-  Ratio signal requires AND with volume surge
-
---- Rule: C&C via DNS ---
-  Approach: Global threshold for DNS packet size + per-IP 3x for DNS flows
-  Global threshold: dns_mean_up > 217 bytes (training mean + 5σ, mean≈199.9, σ≈3.47)
-  Per-IP: test_dns_flows > 3x train_dns_flows AND > 100
-  Training DNS mean upload reference:
+    >> threshold = 99th percentile = 0.17
+  HTTPS up/down ratio:
+    194 IPs, min=0.10, p5=0.10, median=0.11, mean=0.11, std=0.00, p95=0.11, p99=0.11, max=0.11
+    >> threshold = 99th percentile = 0.11
+  DNS mean upload bytes per flow:
     194 IPs, min=189.57, p5=194.17, median=199.89, mean=199.89, std=3.47, p95=205.37, p99=209.24, max=212.58
-    >> threshold = mean + 3σ = 210.31
+    >> threshold = 99th percentile = 209.24
+  Flow count per IP:
+    194 IPs, min=193.00, p5=1196.45, median=4616.50, mean=4699.45, std=2172.59, p95=8502.35, p99=9690.62, max=11082.00
+    >> threshold = 99th percentile = 9690.62
+  Unique dst IPs per IP:
+    194 IPs, min=23.00, p5=56.00, median=124.50, mean=126.10, std=42.59, p95=202.35, p99=226.21, max=236.00
+    >> threshold = 99th percentile = 226.21
 
---- Rule: Anomalous External Destinations ---
-  Approach: Global categorical baseline
-  Baseline: countries seen by any IP in training.
-  Rule: flag IP if test data contacts a country NOT in training, with >= 3 flows.
-  194 IPs have country data from training.
-  Global country set seen in training (36): ['AE', 'AT', 'AU', 'BE', 'BH', 'BR', 'CA', 'CH', 'CL', 'CN', 'DE', 'ES', 'FR', 'GB', 'HK', 'ID', 'IE', 'IL', 'IN', 'IT', 'JP', 'KR', 'MX', 'MY', 'NL', 'NO', 'PH', 'PT', 'RO', 'SA', 'SE', 'SG', 'TH', 'TW', 'US', 'ZA']
+--- Rule 1: Internal BotNet ---
+  Approach: Per-IP AND logic (require both signals)
+  Signal: test_flows > 3x train_flows AND > 2,000
+  Signal: test_dsts  > 3x train_dsts   AND > 80
 
---- Rule: External User Behavior ---
-  Approach: Per-IP temporal (off-hours vs training max) + global CV floor
-  Global CV floor (minimum across all training IPs): 3.54
-  Rule: flag external IP if test_CV < 3.54 (more regular than any training IP)
-        OR off-hours > 50% of test flows outside training active hours
-        OR both (AND logic)
+--- Rule 2: Data Exfiltration (DNS + HTTPS) ---
+  DNS signal: relative deviation from median
+    training median = 0.1375
+    max relative deviation in training = 40.81%
+    rule: flag if test ratio > test_median + 204.06%
+    AND dns_flows > P99 = 1131
+  HTTPS signal: relative deviation from median
+    training median = 0.108160
+    max relative deviation in training = 6.45%
+    rule: flag if test ratio > test_median + 32.27% (5x the max normal relative deviation)
+
+--- Rule 3: C&C via DNS ---
+  Approach: DNS beaconing detection
+  Signal: dns_flows > P95(train) = 1040
+    AND dns_flows > 3x train_dns_flows (per-IP surge)
+    AND cv_ratio < 0.5 (DNS intervals became > 2x more periodic)
+    AND dns_https_flow_ratio < exfil threshold (mutual exclusivity with exfil)
+
+--- Rule 4: Anomalous External Destinations ---
+  Baseline: 36 countries seen in training
+  Rule: flag IP contacting a country NOT in global training set, with >= 5 flows
+  Training countries: ['AE', 'AT', 'AU', 'BE', 'BH', 'BR', 'CA', 'CH', 'CL', 'CN', 'DE', 'ES', 'FR', 'GB', 'HK', 'ID', 'IE', 'IL', 'IN', 'IT', 'JP', 'KR', 'MX', 'MY', 'NL', 'NO', 'PH', 'PT', 'RO', 'SA', 'SE', 'SG', 'TH', 'TW', 'US', 'ZA']
+
+--- Rule 5: External User Behavior ---
+  Global CV floor (minimum across all 194 training IPs): 3.54
+  Signal: off-hours > 50% AND test_CV < 3.54
+  OR: off-hours > 80% (extreme schedule shift)
+
 Done.

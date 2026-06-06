@@ -403,74 +403,74 @@ def print_threshold(desc, s, method='p95'):
 
 def print_global_summaries(per_ip_stats, dns_https, per_ip_countries, df_external, private_network):
     print('=' * 60)
-    print('7. GLOBAL SUMMARY — RULE THRESHOLDS')
-    print('   Hybrid approach:')
-    print('     - Global absolute thresholds (mean+kσ from training) for ratios & packet sizes')
-    print('     - Per-IP fixed 3x multiplier for volume metrics (flows, bytes, destinations)')
-    print('     - Categorical baseline for anomalous destinations')
+    print('7. GLOBAL SUMMARY — RULE THRESHOLDS (derived from training data)')
     print('=' * 60)
 
-    print('\n--- Rule: Internal BotNet ---')
-    print('  Approach: Per-IP deviation with fixed 3x multiplier')
-    print('  Signal: test_flows > 3x train_flows AND > 500')
-    print('  Signal: test_dsts   > 3x train_dsts   AND > 20')
-    print_threshold('Training flow count reference', per_ip_stats['total_flows'], 'p95')
-    print_threshold('Training unique dst IPs reference', per_ip_stats['distinct_dsts'], 'p95')
+    dns_flows_s = clean_series(dns_https['dns_flows'])
+    ratio_s = clean_series(dns_https['dns_https_flow_ratio'])
+    https_ratio_s = clean_series(dns_https['https_up_down_ratio'])
+    dns_mean_s = clean_series(dns_https['dns_mean_up'])
 
-    print('\n--- Rule: Data Exfiltration via DNS ---')
-    print('  Approach: Global threshold for DNS/HTTPS ratio + per-IP 3x for DNS volume')
-    print(f'  Global threshold: dns_https_flow_ratio > {0.20} (above training max of 0.19)')
-    print('  Per-IP: test_dns_flows > 3x train_dns_flows AND > 100')
-    print('  Per-IP: test_dns_up > 3x train_dns_up AND > 10,000')
-    print_threshold('Training DNS/HTTPS ratio reference', dns_https['dns_https_flow_ratio'], 'mean2std')
+    print('\n--- Training Data Distributions ---')
+    print_threshold('DNS flows per IP', dns_https['dns_flows'], 'p99')
+    print_threshold('DNS/HTTPS flow ratio', dns_https['dns_https_flow_ratio'], 'p99')
+    print_threshold('HTTPS up/down ratio', dns_https['https_up_down_ratio'], 'p99')
+    print_threshold('DNS mean upload bytes per flow', dns_https['dns_mean_up'], 'p99')
+    print_threshold('Flow count per IP', per_ip_stats['total_flows'], 'p99')
+    print_threshold('Unique dst IPs per IP', per_ip_stats['distinct_dsts'], 'p99')
 
-    print('\n--- Rule: Data Exfiltration via HTTPS ---')
-    print('  Approach: Global threshold for up/down ratio + per-IP 3x for HTTPS volume')
-    print(f'  Global threshold: https_up_down_ratio > {0.12} (training mean + 3σ, mean≈0.11, σ≈0.003)')
-    print('  Per-IP: test_https_up > 3x train_https_up AND > 100,000')
-    print('  Ratio signal requires AND with volume surge')
+    print('\n--- Rule 1: Internal BotNet ---')
+    print('  Approach: Per-IP AND logic (require both signals)')
+    print('  Signal: test_flows > 3x train_flows AND > 2,000')
+    print('  Signal: test_dsts  > 3x train_dsts   AND > 80')
 
-    print('\n--- Rule: C&C via DNS ---')
-    print('  Approach: Global threshold for DNS packet size + per-IP 3x for DNS flows')
-    print(f'  Global threshold: dns_mean_up > {217} bytes (training mean + 5σ, mean≈199.9, σ≈3.47)')
-    print('  Per-IP: test_dns_flows > 3x train_dns_flows AND > 100')
-    print_threshold('Training DNS mean upload reference', dns_https['dns_mean_up'], 'mean3std')
+    print(f'\n--- Rule 2: Data Exfiltration (DNS + HTTPS) ---')
+    print(f'  DNS signal: relative deviation from median')
+    dns_ratio_median = ratio_s.median()
+    dns_max_pct = ((ratio_s - dns_ratio_median).abs().max() / dns_ratio_median)
+    print(f'    training median = {dns_ratio_median:.4f}')
+    print(f'    max relative deviation in training = {dns_max_pct*100:.2f}%')
+    print(f'    rule: flag if test ratio > test_median + {5*dns_max_pct*100:.2f}%')
+    print(f'    AND dns_flows > P99 = {dns_flows_s.quantile(0.99):.0f}')
+    print(f'  HTTPS signal: relative deviation from median')
+    https_ratio_median = https_ratio_s.median()
+    max_pct = ((https_ratio_s - https_ratio_median).abs().max() / https_ratio_median)
+    print(f'    training median = {https_ratio_median:.6f}')
+    print(f'    max relative deviation in training = {max_pct*100:.2f}%')
+    print(f'    rule: flag if test ratio > test_median + {5*max_pct*100:.2f}% '
+          f'(5x the max normal relative deviation)')
 
-    print('\n--- Rule: Anomalous External Destinations ---')
-    print('  Approach: Global categorical baseline')
-    print('  Baseline: countries seen by any IP in training.')
-    print('  Rule: flag IP if test data contacts a country NOT in training, with >= 3 flows.')
+    print(f'\n--- Rule 3: C&C via DNS ---')
+    print(f'  Approach: DNS beaconing detection')
+    print(f'  Signal: dns_flows > P95(train) = {dns_flows_s.quantile(0.95):.0f}')
+    print(f'    AND dns_flows > 3x train_dns_flows (per-IP surge)')
+    print(f'    AND cv_ratio < 0.5 (DNS intervals became > 2x more periodic)')
+    print(f'    AND dns_https_flow_ratio < exfil threshold (mutual exclusivity with exfil)')
+
+    print('\n--- Rule 4: Anomalous External Destinations ---')
     all_countries = set()
     for countries in per_ip_countries.values():
         all_countries.update(countries.keys())
-    print(f'  {len(per_ip_countries)} IPs have country data from training.')
-    print(f'  Global country set seen in training ({len(all_countries)}): {sorted(all_countries)}')
+    print(f'  Baseline: {len(all_countries)} countries seen in training')
+    print(f'  Rule: flag IP contacting a country NOT in global training set, with >= 5 flows')
+    print(f'  Training countries: {sorted(all_countries)}')
 
-    print('\n--- Rule: External User Behavior ---')
-    print('  Approach: Per-IP temporal (off-hours vs training max) + global CV floor')
+    print('\n--- Rule 5: External User Behavior ---')
     ext_stats = []
     for src_ip in sorted(df_external['src_ip'].unique()):
         ip_data = df_external[df_external['src_ip'] == src_ip].sort_values('timestamp')
-        flows = len(ip_data)
         intervals = ip_data['timestamp'].diff().dropna()
-        hours = (ip_data['timestamp'] // 360000).unique()
         mean_int = intervals.mean() if len(intervals) > 0 else 0
         std_int = intervals.std() if len(intervals) > 0 else 0
         cv = std_int / mean_int if mean_int > 0 else np.nan
-        ext_stats.append({
-            'src_ip': src_ip,
-            'flows': flows,
-            'cv': cv,
-            'hours': sorted(hours),
-        })
+        ext_stats.append({'src_ip': src_ip, 'cv': cv})
     ext_df = pd.DataFrame(ext_stats)
     cvs = ext_df['cv'].dropna()
     min_cv = cvs.min()
-    print(f'  Global CV floor (minimum across all training IPs): {min_cv:.2f}')
-    print(f'  Rule: flag external IP if test_CV < {min_cv:.2f} (more regular than any training IP)')
-    print(f'        OR off-hours > 50% of test flows outside training active hours')
-    print(f'        OR both (AND logic)')
-
+    print(f'  Global CV floor (minimum across all {len(ext_df)} training IPs): {min_cv:.2f}')
+    print(f'  Signal: off-hours > 50% AND test_CV < {min_cv:.2f}')
+    print(f'  OR: off-hours > 80% (extreme schedule shift)')
+    print()
 
 
 def generate_graphs(dns_https, df_internal, reader_country, private_network):
@@ -537,6 +537,37 @@ def generate_graphs(dns_https, df_internal, reader_country, private_network):
     plt.savefig(GRAPHS_DIR / 'dns_vs_https_scatter_train.png')
     plt.close()
     print('  Saved graphs/dns_vs_https_scatter_train.png')
+
+    https_flows = dns_https['https_flows'].dropna()
+    https_p99 = https_flows.quantile(0.99)
+    plt.figure(figsize=(10, 5))
+    plt.hist(https_flows, bins=30, edgecolor='black', alpha=0.8)
+    plt.axvline(x=https_p99, color='red', linestyle='--', linewidth=2,
+                label=f'P99 = {https_p99:.0f}')
+    plt.xlabel('HTTPS flow count per IP')
+    plt.ylabel('Frequency (number of IPs)')
+    plt.title('Distribution of HTTPS flow count per IP (training)')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(GRAPHS_DIR / 'https_flows_hist_train.png')
+    plt.close()
+    print('  Saved graphs/https_flows_hist_train.png')
+
+    https_ratio = dns_https['https_up_down_ratio'].replace([np.inf, -np.inf], np.nan).dropna()
+    r_mean = https_ratio.mean()
+    r_dev = (https_ratio - r_mean).abs().quantile(0.98)
+    plt.figure(figsize=(10, 5))
+    plt.hist(https_ratio, bins=30, edgecolor='black', alpha=0.8)
+    plt.axvline(x=r_mean + 5*r_dev, color='red', linestyle='--', linewidth=2,
+                label=f'Threshold = {r_mean + 5*r_dev:.4f}')
+    plt.xlabel('HTTPS up/down bytes ratio per IP')
+    plt.ylabel('Frequency (number of IPs)')
+    plt.title('Distribution of HTTPS up/down ratio per IP (training)')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(GRAPHS_DIR / 'https_ratio_hist_train.png')
+    plt.close()
+    print('  Saved graphs/https_ratio_hist_train.png')
 
     print()
 
